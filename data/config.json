@@ -1,0 +1,16 @@
+{
+  "order_after": "explosive",
+  "enchant": {
+    "label": "Jackhammer",
+    "base_cost": 2500000,
+    "step": 750,
+    "max": 1000
+  },
+  "gameplay": {
+    "jackhammer_proc_base": 0.0005,
+    "jackhammer_proc_per_level": 0.00002,
+    "jackhammer_proc_cap": 0.03,
+    "jackhammer_batch_size": 350,
+    "jackhammer_batch_delay": 0
+  }
+}
