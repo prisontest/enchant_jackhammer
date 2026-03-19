@@ -27,15 +27,6 @@ local function cfg_number(key, fallback)
     return n
 end
 
-local function gameplay_cfg_number(key, fallback)
-    local g = (((OP or {}).config or {}).balance or {}).gameplay or {}
-    local n = tonumber(g[key])
-    if not n then
-        return fallback
-    end
-    return n
-end
-
 local function jackhammer_proc_chance(level)
     local lvl = math.max(0, math.floor(tonumber(level) or 0))
     if lvl <= 0 then
@@ -45,58 +36,6 @@ local function jackhammer_proc_chance(level)
     local per_level = math.max(0, tonumber(cfg_number("jackhammer_proc_per_level", 0.00002)) or 0.00002)
     local cap = math.max(0, math.min(1, tonumber(cfg_number("jackhammer_proc_cap", 0.03)) or 0.03))
     return math.max(0, math.min(cap, base + (lvl * per_level)))
-end
-
-local function progression_pace_multiplier(level, floor_key)
-    local lvl = math.max(1, math.floor(tonumber(level) or 1))
-    if lvl <= 100 then
-        return 1.20 - (lvl * 0.0025)
-    elseif lvl <= 1000 then
-        return 0.95 - ((lvl - 100) * 0.0005)
-    elseif lvl <= 5000 then
-        return 0.50 - ((lvl - 1000) * 0.0000625)
-    end
-    local floor = gameplay_cfg_number(floor_key or "money_pace_floor", 0.18)
-    return math.max(floor, 0.25 - ((lvl - 5000) * 0.000015))
-end
-
-local function minecraft_fortune_multiplier(level)
-    local lvl = math.max(0, math.floor(tonumber(level) or 0))
-    if lvl <= 0 then
-        return 1
-    end
-    local j = math.random(0, lvl + 1) - 1
-    if j < 0 then
-        j = 0
-    end
-    return j + 1
-end
-
-local function tokengreed_multiplier(level)
-    local greed = math.max(0, math.floor(tonumber(level) or 0))
-    local roll = minecraft_fortune_multiplier(math.floor(greed * 2))
-    return (1 + (greed * 0.02)) * roll * 2
-end
-
-local function combo_proc(level)
-    local lvl = math.max(0, math.floor(tonumber(level) or 0))
-    if lvl <= 0 then
-        return false
-    end
-    local chance = math.min(0.003, lvl * 0.00005)
-    return math.random() < chance
-end
-
-local function greed_proc(level)
-    local lvl = math.max(0, math.floor(tonumber(level) or 0))
-    if lvl <= 0 then
-        return false
-    end
-    local base = math.max(0, tonumber(gameplay_cfg_number("greed_proc_base", 0.001)) or 0.001)
-    local per_level = math.max(0, tonumber(gameplay_cfg_number("greed_proc_per_level", 0.00008)) or 0.00008)
-    local cap = math.max(0, math.min(1, tonumber(gameplay_cfg_number("greed_proc_cap", 0.08)) or 0.08))
-    local chance = math.min(cap, base + (lvl * per_level))
-    return math.random() < chance
 end
 
 local function fmt_int(n)
@@ -180,38 +119,17 @@ local function clear_layer_fast(mine, y, origin_x, origin_z)
 end
 
 local function simulate_virtual_rewards(player, stack, counts)
-    local fortune = OP.get_enchant_level(stack, "fortune")
-    local combo = OP.get_enchant_level(stack, "combo")
-    local greed = OP.get_enchant_level(stack, "greed")
-    local tokengreed = OP.get_enchant_level(stack, "tokengreed")
-    local experienced = OP.get_enchant_level(stack, "experienced")
-    local hatchery = OP.get_enchant_level(stack, "hatchery")
-
-    local prestige_mult = OP.prestige_boost(player)
-    local sell_mult = OP.pick_multiplier(stack, "sell")
-    local token_mult = OP.pick_multiplier(stack, "token")
-    local exp_mult = OP.pick_multiplier(stack, "exp")
-
-    if type(OP.pet_multiplier_for_player) == "function" then
-        sell_mult = sell_mult * OP.pet_multiplier_for_player(player, "sell")
-        token_mult = token_mult * OP.pet_multiplier_for_player(player, "token")
-        exp_mult = exp_mult * OP.pet_multiplier_for_player(player, "exp")
-    end
-
-    token_mult = token_mult * prestige_mult
-    exp_mult = exp_mult * prestige_mult
-
-    local profile = OP.get_pick_profile(stack)
-    local pace_money = progression_pace_multiplier(profile.level, "money_pace_floor")
-    local pace_token = progression_pace_multiplier(profile.level, "token_pace_floor")
-    local pace_xp = progression_pace_multiplier(profile.level, "xp_pace_floor")
-
-    local token_drop_min = math.max(0, math.floor(gameplay_cfg_number("token_drop_min", 1)))
-    local token_drop_max = math.max(token_drop_min, math.floor(gameplay_cfg_number("token_drop_max", 100)))
-
-    local timed_sell_mult = 1
-    if type(OP.sell_multi_multiplier_for_player) == "function" then
-        timed_sell_mult = math.max(1, tonumber(OP.sell_multi_multiplier_for_player(player)) or 1)
+    local reward_ctx = type(OP.get_mining_reward_context) == "function"
+        and OP.get_mining_reward_context(player, stack, {source = "jackhammer"})
+        or nil
+    if type(reward_ctx) ~= "table" then
+        return {
+            money = 0,
+            tokens = 0,
+            xp = 0,
+            blocks = 0,
+            hatchery_level = 0,
+        }
     end
 
     local total_money = 0
@@ -222,32 +140,13 @@ local function simulate_virtual_rewards(player, stack, counts)
     for node_name, count in pairs(counts) do
         local block = OP.get_block_by_node(node_name)
         if block then
-            local base_money = tonumber(block.sell_value) or tonumber(block.value) or 1
-            local is_token_ore = type(block.id) == "string" and block.id:sub(-4) == "_ore"
-
             for _ = 1, count do
-                local mult = prestige_mult * minecraft_fortune_multiplier(fortune) * sell_mult
-                local money = math.max(1, math.floor(base_money * mult * pace_money))
-                money = math.max(1, math.floor(money * timed_sell_mult))
-
-                local token_gain = 0
-                if is_token_ore then
-                    token_gain = math.random(token_drop_min, token_drop_max)
-                    token_gain = math.floor(token_gain * tokengreed_multiplier(tokengreed * token_mult))
-                    token_gain = math.max(0, math.floor(token_gain * pace_token))
-                end
-
-                if greed_proc(greed) then
-                    money = money * 2
-                end
-                if combo_proc(combo) then
-                    money = money * 2
-                    token_gain = token_gain * 2
-                end
-
-                total_money = total_money + money
-                total_tokens = total_tokens + token_gain
-                total_xp = total_xp + ((1 + (experienced * 0.08)) * exp_mult * pace_xp)
+                local reward = OP.roll_mining_block_reward(player, stack, block, reward_ctx, {
+                    source = "jackhammer",
+                })
+                total_money = total_money + reward.money
+                total_tokens = total_tokens + reward.tokens
+                total_xp = total_xp + reward.xp
             end
 
             total_blocks = total_blocks + count
@@ -259,7 +158,7 @@ local function simulate_virtual_rewards(player, stack, counts)
         tokens = total_tokens,
         xp = total_xp,
         blocks = total_blocks,
-        hatchery_level = hatchery,
+        hatchery_level = reward_ctx.hatchery,
     }
 end
 
